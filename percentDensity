@@ -8,7 +8,7 @@ residential units built in each zoning district. Also applies symbology and impo
 Future version will be updated to apply this to 20 years of datasets for a time series analysis.
 """
 
-#%% STEP 1: setup environment & data dictionary
+#%% STEP 1: setup environment
 
 # import arcpy for working with ArcGIS Pro tools & methods
 import arcpy
