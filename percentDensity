@@ -1,0 +1,342 @@
+# -*- coding: utf-8 -*-
+"""
+Completed 8/10/22 C. Bryant
+
+Takes COT/Leon County exlu21 (existing land use) & authoritative zoning layer to determine percentage of allowed 
+residential units built in each zoning district. Also applies symbology and imports into an active project.
+
+Future version will be updated to apply this to 20 years of datasets for a time series analysis.
+"""
+
+#%% STEP 1: setup environment & data dictionary
+
+# import arcpy for working with ArcGIS Pro tools & methods
+import arcpy
+
+# set workspace
+arcpy.env.workspace = r"C:\Users\cheri\Documents\ArcGIS\Projects\InclusionaryHousingData\InclusionaryHousingData.gdb"
+
+# tell python it's OK to overwrite previous versions of layers & feature classes
+arcpy.env.overwriteOutput = True
+
+
+#%% STEP 2: access existing land use layer, copy it, delete unnecessary fields and convert polygon to point
+
+try:
+    # set local variables
+    inFC_exlu21 = r"C:\Users\cheri\Documents\ArcGIS\City Data\exlu_2021_detailed\exlu2021detail.gdb\exlu2021detail"
+    outFC_resUnits = "resUnits"
+    arcpy.management.CopyFeatures(inFC_exlu21, outFC_resUnits)
+    
+    # remove unnecessary fields - only need the number of residential units
+    field = "resunits"
+    method = "KEEP_FIELDS"
+    arcpy.management.DeleteField(outFC_resUnits, field, method)
+    
+    # list fields to check if DeleteField worked
+    fields = arcpy.ListFields(outFC_resUnits)
+    for field in fields:
+        print(field.name)
+    
+    # convert polygons to centroid so that in Step 3 those parcels that cross boundaries will be assigned to the zoning
+    # district where their center is located. The HAVE_THEIR_CENTER_IN option only exists for the target features, not join
+    # ones, so won't work in Step 3.
+    inFC_resUnits = "resUnits"
+    outFC_resUnits = "resUnitsCentroids"
+    
+    arcpy.management.FeatureToPoint(inFC_resUnits, outFC_resUnits)
+        
+except:
+    # print error messages
+    print(arcpy.GetMessages())
+
+    
+
+#%% STEP 3: access zoning layer and do a spatial join to create a new feature class
+
+try:
+    #set local variables
+    targetFC_zoning = "Zoning_7_30_22"
+    joinFC_resUnits = "resUnitsCentroids"
+    outFC_built = "zoning_PercentDensityBuilt"
+
+    
+    # Prior to doing the spatial join, we need to fieldmap so the 'resunits' of exlu are summed instead of just the 1st value 
+    # being used (1st value is the default setting). A fieldmap is just a programming object representing a field/column of a 
+    # featureclass/table; thus a fieldmappings object is just a collection of all the columns (ie a table)
+    
+    # Create a new fieldmappings and add the two input feature classes (ie, add all the columns/fields from their tables)
+    fieldmappings = arcpy.FieldMappings()
+    fieldmappings.addTable(targetFC_zoning) 
+    fieldmappings.addTable(joinFC_resUnits)
+
+    # First get the resunits fieldmap(i.e. column) via it's index position in the fieldmappings object 
+    resUnitIndex = fieldmappings.findFieldMapIndex("resunits")
+    fieldmap = fieldmappings.getFieldMap(resUnitIndex)
+    print(f"resUnitIndex is: {resUnitIndex}") # test to see if the index was obtained
+
+    # Create a field object so we can access the field's properties - this is so we can update the name & alias properties; 
+    # don't need this step if you want to keep the same field and alias names
+    field = fieldmap.outputField
+    # Rename the field and pass the updated field object back into the field map
+    field.name = "sumResUnits"
+    field.aliasName = "sumResUnits"
+    fieldmap.outputField = field
+
+    # Set the merge rule to "sum" and then replace the old fieldmap(ie column) in the fieldmappings(i.e. table) object
+    # with the updated one
+    fieldmap.mergeRule = "Sum"
+    fieldmappings.replaceFieldMap(resUnitIndex, fieldmap)
+      
+           
+    # NOW we are ready to do a spatial join of zoning & exlu21
+    # since we found parcel centroids earlier, parcels split by zoning line will be counted in the zoning polygon 
+    # that completely contains the centroid point.  
+    arcpy.analysis.SpatialJoin(targetFC_zoning, joinFC_resUnits, outFC_built, "#", "#", fieldmappings, "COMPLETELY_CONTAINS")
+    
+    # test to see if new layer was created
+    print(arcpy.Exists("zoning_PercentDensityBuilt")) 
+    
+except:
+    # print error messages
+    print(arcpy.GetMessages())
+
+
+#%% STEP 4:  calculate a new field for the allowed density by looping through the 'densityDict' items
+        # LOOPING OVER THE DICTIONARY THROWS AN ERROR IN ARCPRO NOTEBOOK BUT WORKS FINE IN SPYDER
+        # NOTEBOOK ERROR SAYS 'densityDict' IS UNDEFINED; DOESN'T APPEAR TO RECOGNIZE DICTIONARY STRUCTURE;
+
+try:
+    # create a dictionary of zoning districts & their max allowed density
+    densityDict = {
+        'AC': 45,
+        'ASN-A': 50,
+        'ASN-B': 50,
+        'ASN-C': 75,
+        'ASN-D': 100,
+        'C-1': 16,
+        'C-2': 16,
+        'CC': 150,
+        'CM': 20,
+        'CP': 16,
+        'CU-12': 12,
+        'CU-18': 18,
+        'CU-26': 26,
+        'CU-45': 45,
+        'IC': 16,
+        'LP': 0.5,
+        'MCN': 12,
+        'MH': 8,
+        'MR-1': 20,
+        'NB-1': 18,
+        'NBO': 8,
+        'OR-1': 8,
+        'OR-2': 16,
+        'OR-3': 20,
+        'R-1': 3.63,
+        'R-2': 4.84,
+        'R-3': 8,
+        'R-4': 10,
+        'R-5': 8,
+        'R': 0.1,
+        'RP-1': 3.6,
+        'RP-2': 6,
+        'RP-MH': 6,
+        'SCD': 6,
+        'UP-1': 16,
+        'UP-2': 20,
+        'UT': 50,
+        'UV': 100
+        }
+   
+    # Set the other local variables
+    inFC_built = "zoning_PercentDensityBuilt"
+    fieldName = "allowedUnits"
+    expression = "calcAllowedUnits(!ZONING!, !acre_noRoads!)"
+        
+    # print statement added to verify dictionary values were accessed properly
+    codeblock = """ 
+def calcAllowedUnits(zoning, acres):
+    for district in densityDict:
+        if zoning == district:
+            print(f"The density for {zoning} is {densityDict[district]}")
+            return acres * densityDict[district]"""
+
+    # execute CalculateField 
+    arcpy.CalculateField_management(inFC_built, fieldName, expression, "PYTHON3", codeblock, field_type="FLOAT")    
+
+    # check if new field was created by listing all fields in 'zoning_PercentDensityBuilt' feature class
+    fields = arcpy.ListFields(inFC_built)
+    for field in fields:
+        print(field.name)
+    
+except:
+    # print error messages
+    print(arcpy.GetMessages())
+
+#%% STEP 5: calculate a new field for the percentage of allowed units built
+
+try:
+    # Set local variables
+    inFC_built = "zoning_PercentDensityBuilt"
+    fieldName = "percAllowedUnits"
+    expression = "calcPercAllowedUnits(!SumResUnits!, !allowedUnits!)"
+    
+    # 1) account for fields that don't allow any units assigning a value of '999' so that they can be symbolized separately; 
+    # 2) convert any NULL 'SumResUnits' values to "9999" so they can also be symbolized separately; these appear to
+    # be the pieces that are leftover from multi-zoned parcels when the 'resunits' were assigned only to the zoning district
+    # where the parcel centroid was located
+    # 3) for the majority of records, divide the existing units by the allowed units & multiply by 100 for percentage
+    codeblock = """
+def calcPercAllowedUnits(builtUnits, allowedUnits):
+    if allowedUnits == None:
+        return '999'
+    elif builtUnits == None:
+        return '9999'
+    else:
+        return (builtUnits / allowedUnits) * 100"""
+     
+    # 3: Execute CalculateField 
+    arcpy.CalculateField_management(inFC_built, fieldName, expression, "PYTHON3", codeblock, field_type="FLOAT")
+    
+    # check if new field was created by listing all fields in 'zoning_PercentDensityBuilt' feature class
+    fields = arcpy.ListFields(inFC_built)
+    for field in fields:
+        print(field.name)
+
+except:
+    # print error messages
+    print(arcpy.GetMessages())
+    
+#%% STEP 6: Clip to City of Tallahassee limits
+
+try:
+    # set new local variables needed for function (if we can establish AGOL access, would be better to do that in the future 
+    # so as to ensure use of the most current city limit boundary)
+    clipFC = "cityLimits"
+    outFC_builtCOT = "zoning_PercentDensityBuilt_COT"
+    arcpy.analysis.Clip(inFC_built, clipFC, outFC_builtCOT)
+    
+except:
+    # print error messages
+    print(arcpy.GetMessages())
+
+#%% STEP 7: Set up graduated colors symbology using the mapping module of arcpy (arcpy.mp)
+
+try:
+    #**********
+    # FIRST, SET VARIABLES TO ACCESS THE PROJECT, MAP & LAYERS
+    
+    # create a project object so we can then access it's layers & symbology
+    project = aprx = arcpy.mp.ArcGISProject(r"C:/Users/cheri/Documents/ArcGIS/Projects/InclusionaryHousingData\InclusionaryHousingData.aprx")
+    
+    # create variable for the map
+    mapName = "Map"
+    # use 'listMaps" method to access the map
+    m = project.listMaps(mapName)[0]
+    print(f"Map name is: {m.name}")
+     
+    # create a variable for the layer we want to symbolize
+    percDensPath = r"C:\Users\cheri\Documents\ArcGIS\Projects\InclusionaryHousingData\InclusionaryHousingData.gdb\zoning_PercentDensityBuilt_COT"
+    
+    # Add our new 'zoning_PercentDensityBuilt_COT' layer to the map (won't need to do this if using an ArcPro Notebook).
+    # 'm.addLayer()' won't work unless you're adding a layer file (.lyrx) or a layer from another map    
+    m.addDataFromPath(percDensPath) 
+    # save so that layer is available within the project for the next steps
+    project.save()
+        
+    # use 'listLayers' method to access the layer
+    percDens = "zoning_PercentDensityBuilt_COT"
+    percDensLyr = m.listLayers(percDens)[0]
+    # print to verify we have access to the layer
+    print(f"Layer to symbolize is: {percDensLyr}")
+    
+    # create variable to access layer's symbology
+    percDensLyrSym = percDensLyr.symbology
+    # verify access by seeing what type of renderer it's using
+    print(f"initial renderer type is {percDensLyrSym.renderer.type}")
+    
+    
+    #************
+    # SECOND, UPDATE THE RENDERER
+    
+    # see what ramps are available so we can select the correct name (can comment this out once this section is working)
+    #for ramp in project.listColorRamps():
+     #   print (ramp.name)
+    
+    #***updating the color ramp***
+    # update the color ramp type & test to see if it worked
+    percDensLyrSym.updateRenderer('GraduatedColorsRenderer')
+    print(f"updated renderer type is: {percDensLyrSym.renderer.type}")
+    # update the color ramp field & test to see if it worked    
+    percDensLyrSym.renderer.classificationField = "percAllowedUnits"
+    print(f"classification field is: {percDensLyrSym.renderer.classificationField}")
+    
+    # update the color ramp name ***Decided not to use this because it was more practical to make custom with 3 custom categories
+    #percDensLyrSym.renderer.colorRamp = project.listColorRamps("Yellow-Orange-Red (5 classes)")[0]
+    # not testing ramp name because the colorRamp.name property just returns an empty string outside of the listColorRamp method
+   
+    
+    #***********
+    # THIRD, SET THE BREAKPOINTS AND SYMBOLOGY BASED ON THE INDEX POSITION OF THE BREAK          
+    # using print statements to test at each step
+    
+    print(f"initial classification method is: {percDensLyrSym.renderer.classificationMethod}")
+    #set break count
+    percDensLyrSym.renderer.breakCount = 7
+    print(f"break count is: {percDensLyrSym.renderer.breakCount}")
+
+    # main breaks - use loop to set breaks at intervals of 25 & set the desired color attributes automatically
+    mainBrks = percDensLyrSym.renderer.classBreaks[0:4]
+    firstVal = 0    
+    breakValue = 25
+    hue = 60
+    sat = 30
+    for brk in mainBrks:
+        brk.upperBound = breakValue
+        brk.label = "{0}% - {1}%".format(str(firstVal),str(breakValue))
+        brk.symbol.color = {'HSV' : [hue, sat, 95, 100]} # [hue, saturation, value, alpha] 
+        breakValue += 25
+        firstVal += 25
+        hue -= 20
+        sat += 20
+    
+    #over 100% break:
+    over100Brk = percDensLyrSym.renderer.classBreaks[4]    
+    over100Brk.upperBound = 225
+    over100Brk.description = "over 100%"
+    over100Brk.label = "over 100%"
+    over100Brk.symbol.color = {'RGB' : [168, 0, 0, 100]} # [R,G,B,alpha]  
+    
+    # 'PUD or district doesn't allow' break 
+    nonDistBrk = percDensLyrSym.renderer.classBreaks[5] 
+    nonDistBrk.upperBound = 999
+    nonDistBrk.description = "PUD or this district doesn't allow residential"
+    nonDistBrk.label = "PUD or non-residential district"
+    nonDistBrk.symbol.color = {'RGB' : [160, 160, 160, 100]} # [R,G,B,alpha]            
+        
+    # no data break
+    noDataBrk = percDensLyrSym.renderer.classBreaks[6]
+    noDataBrk.upperBound = 9999
+    noDataBrk.description = "no data - likley because this is the remainder of a parcel with split zoning"
+    noDataBrk.label = "no data"
+    noDataBrk.symbol.color = {'RGB' : [64, 64, 64, 100]} # [R,G,B,alpha]
+     
+    # print test statement to verify update ran
+    print(f"updated classification method is: {percDensLyrSym.renderer.classificationMethod}")
+    
+    
+    #***********
+    # FINAL STEPS TO PULL IT ALL TOGETHER
+    
+    # we didn't change the actual layer variable with these methods, just the symbology variable,
+    # so now we need to update the layer variable to include the symbology we just created
+    percDensLyr.symbology = percDensLyrSym       
+
+    # save the project and delete the project object to remove any locks
+    project.save()
+    del project
+    
+except:
+    # print error messages
+    print(arcpy.GetMessages())
